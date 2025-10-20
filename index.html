@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mini Agar.io Clone</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: radial-gradient(circle at center, #1f1f2e 0%, #0f0f17 100%);
+        color: #f0f0f0;
+      }
+
+      #hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        padding: 10px 14px;
+        border-radius: 8px;
+        background: rgba(15, 15, 30, 0.75);
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(6px);
+      }
+
+      #hud h1 {
+        margin: 0 0 6px 0;
+        font-size: 20px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      #hud p {
+        margin: 4px 0;
+        font-size: 14px;
+      }
+
+      #hud span {
+        font-weight: 600;
+      }
+
+      #scoreboard {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        padding: 10px 16px;
+        min-width: 180px;
+        border-radius: 8px;
+        background: rgba(15, 15, 30, 0.75);
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(6px);
+      }
+
+      #scoreboard h2 {
+        margin: 0 0 8px;
+        font-size: 16px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      #scoreboard ol {
+        margin: 0;
+        padding-left: 20px;
+        font-size: 14px;
+      }
+
+      #scoreboard li {
+        line-height: 1.5;
+      }
+
+      #canvas {
+        display: block;
+      }
+
+      #instructions {
+        position: fixed;
+        bottom: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 10px 16px;
+        border-radius: 999px;
+        background: rgba(15, 15, 30, 0.65);
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+        font-size: 14px;
+        letter-spacing: 0.05em;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <aside id="hud">
+      <h1>Nova Petri</h1>
+      <p>Mass: <span id="mass">10</span></p>
+      <p>Speed: <span id="speed">0</span></p>
+    </aside>
+    <aside id="scoreboard">
+      <h2>Leaderboard</h2>
+      <ol id="leaders"></ol>
+    </aside>
+    <div id="instructions">Move your mouse to glide. Eat dots, grow large, dominate!</div>
+
+    <script>
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+
+      const hudMass = document.getElementById("mass");
+      const hudSpeed = document.getElementById("speed");
+      const leaderList = document.getElementById("leaders");
+
+      const WORLD_SIZE = 3500;
+      const FOOD_COUNT = 320;
+      const BOT_COUNT = 12;
+      const COLORS = [
+        "#22d3ee",
+        "#f97316",
+        "#a855f7",
+        "#facc15",
+        "#4ade80",
+        "#fb7185",
+        "#38bdf8",
+        "#f472b6",
+      ];
+
+      const state = {
+        pointer: { x: 0, y: 0 },
+        player: null,
+        food: [],
+        bots: [],
+        camera: { x: 0, y: 0, zoom: 1 },
+        lastFrame: performance.now(),
+      };
+
+      function randomBetween(min, max) {
+        return Math.random() * (max - min) + min;
+      }
+
+      function length(x, y) {
+        return Math.hypot(x, y);
+      }
+
+      function createBlob({
+        x = randomBetween(-WORLD_SIZE, WORLD_SIZE),
+        y = randomBetween(-WORLD_SIZE, WORLD_SIZE),
+        mass = randomBetween(8, 24),
+        color = COLORS[Math.floor(Math.random() * COLORS.length)],
+        name = "",
+        target = null,
+      } = {}) {
+        return {
+          x,
+          y,
+          vx: 0,
+          vy: 0,
+          mass,
+          color,
+          name,
+          target,
+        };
+      }
+
+      function init() {
+        resize();
+        window.addEventListener("resize", resize);
+        canvas.addEventListener("mousemove", onPointerMove);
+        canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+        canvas.addEventListener("touchstart", onTouchMove, { passive: false });
+
+        state.player = createBlob({
+          x: 0,
+          y: 0,
+          mass: 32,
+          color: "#3b82f6",
+          name: "You",
+        });
+
+        state.pointer.x = window.innerWidth / 2;
+        state.pointer.y = window.innerHeight / 2;
+
+        state.food = Array.from({ length: FOOD_COUNT }, () =>
+          createBlob({ mass: randomBetween(2, 6) })
+        );
+        state.bots = Array.from({ length: BOT_COUNT }, (_, i) =>
+          createBlob({
+            mass: randomBetween(20, 60),
+            name: `Bot-${i + 1}`,
+          })
+        );
+
+        requestAnimationFrame(loop);
+      }
+
+      function resize() {
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = window.innerWidth * ratio;
+        canvas.height = window.innerHeight * ratio;
+        canvas.style.width = `${window.innerWidth}px`;
+        canvas.style.height = `${window.innerHeight}px`;
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      }
+
+      function onPointerMove(event) {
+        const rect = canvas.getBoundingClientRect();
+        state.pointer.x = event.clientX - rect.left;
+        state.pointer.y = event.clientY - rect.top;
+      }
+
+      function onTouchMove(event) {
+        event.preventDefault();
+        const touch = event.touches[0];
+        if (!touch) return;
+        const rect = canvas.getBoundingClientRect();
+        state.pointer.x = touch.clientX - rect.left;
+        state.pointer.y = touch.clientY - rect.top;
+      }
+
+      function update(delta) {
+        const player = state.player;
+
+        const dirX = state.pointer.x - window.innerWidth / 2;
+        const dirY = state.pointer.y - window.innerHeight / 2;
+        const len = length(dirX, dirY) || 1;
+        const speed = Math.max(40, 260 - Math.log(player.mass + 1) * 18);
+        player.vx += ((dirX / len) * speed - player.vx) * 0.08;
+        player.vy += ((dirY / len) * speed - player.vy) * 0.08;
+
+        player.x += player.vx * delta;
+        player.y += player.vy * delta;
+
+        clampToWorld(player);
+
+        moveBots(delta);
+        handleCollisions();
+        updateCamera(delta);
+        updateHud();
+        updateLeaderboard();
+      }
+
+      function clampToWorld(blob) {
+        const radius = getRadius(blob);
+        blob.x = Math.min(Math.max(blob.x, -WORLD_SIZE + radius), WORLD_SIZE - radius);
+        blob.y = Math.min(Math.max(blob.y, -WORLD_SIZE + radius), WORLD_SIZE - radius);
+      }
+
+      function getRadius(blob) {
+        return Math.sqrt(blob.mass) * 4;
+      }
+
+      function moveBots(delta) {
+        state.bots.forEach((bot) => {
+          if (!bot.target || Math.random() < 0.01) {
+            bot.target = {
+              x: randomBetween(-WORLD_SIZE, WORLD_SIZE),
+              y: randomBetween(-WORLD_SIZE, WORLD_SIZE),
+            };
+          }
+
+          const dx = bot.target.x - bot.x;
+          const dy = bot.target.y - bot.y;
+          const dist = length(dx, dy) || 1;
+          const speed = Math.max(30, 220 - Math.log(bot.mass + 1) * 16);
+          bot.vx += ((dx / dist) * speed - bot.vx) * 0.05;
+          bot.vy += ((dy / dist) * speed - bot.vy) * 0.05;
+          bot.x += bot.vx * delta;
+          bot.y += bot.vy * delta;
+          clampToWorld(bot);
+        });
+      }
+
+      function handleCollisions() {
+        const blobs = [state.player, ...state.bots];
+
+        state.food = state.food.filter((dot) => {
+          for (const blob of blobs) {
+            if (isEating(blob, dot)) {
+              blob.mass += dot.mass * 0.6;
+              return false;
+            }
+          }
+          return true;
+        });
+
+        while (state.food.length < FOOD_COUNT) {
+          state.food.push(createBlob({ mass: randomBetween(2, 6) }));
+        }
+
+        for (let i = blobs.length - 1; i >= 0; i--) {
+          const blobA = blobs[i];
+          for (let j = i - 1; j >= 0; j--) {
+            const blobB = blobs[j];
+            if (!blobA || !blobB) continue;
+            const larger = blobA.mass > blobB.mass ? blobA : blobB;
+            const smaller = larger === blobA ? blobB : blobA;
+
+            if (isEating(larger, smaller, 0.82)) {
+              larger.mass += smaller.mass * 0.85;
+              if (smaller === state.player) {
+                respawnPlayer();
+              } else {
+                const idx = state.bots.indexOf(smaller);
+                if (idx !== -1) {
+                  state.bots[idx] = createBlob({
+                    mass: randomBetween(18, 44),
+                    name: smaller.name,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      function respawnPlayer() {
+        state.player = createBlob({
+          x: randomBetween(-WORLD_SIZE / 2, WORLD_SIZE / 2),
+          y: randomBetween(-WORLD_SIZE / 2, WORLD_SIZE / 2),
+          mass: 28,
+          color: "#3b82f6",
+          name: "You",
+        });
+      }
+
+      function isEating(eater, food, scale = 1) {
+        const dist = length(eater.x - food.x, eater.y - food.y);
+        return dist < (getRadius(eater) - getRadius(food) * 0.35) * scale;
+      }
+
+      function updateCamera(delta) {
+        const player = state.player;
+        const desiredZoom = Math.max(0.35, 80 / getRadius(player));
+        state.camera.zoom += (desiredZoom - state.camera.zoom) * 0.05;
+        state.camera.x += (player.x - state.camera.x) * 0.08;
+        state.camera.y += (player.y - state.camera.y) * 0.08;
+      }
+
+      function updateHud() {
+        hudMass.textContent = state.player.mass.toFixed(1);
+        const velocity = length(state.player.vx, state.player.vy);
+        hudSpeed.textContent = velocity.toFixed(1);
+      }
+
+      function updateLeaderboard() {
+        const entries = [state.player, ...state.bots]
+          .slice()
+          .sort((a, b) => b.mass - a.mass)
+          .slice(0, 5);
+
+        leaderList.innerHTML = "";
+        entries.forEach((entry) => {
+          const li = document.createElement("li");
+          li.textContent = `${entry.name || "Blob"}: ${entry.mass.toFixed(0)}`;
+          leaderList.appendChild(li);
+        });
+      }
+
+      function drawGrid() {
+        const gridSpacing = 120;
+        const zoom = state.camera.zoom;
+        const viewWidth = window.innerWidth / zoom;
+        const viewHeight = window.innerHeight / zoom;
+        const minX = state.camera.x - viewWidth / 2;
+        const maxX = state.camera.x + viewWidth / 2;
+        const minY = state.camera.y - viewHeight / 2;
+        const maxY = state.camera.y + viewHeight / 2;
+
+        const startX = Math.floor(minX / gridSpacing) * gridSpacing;
+        const startY = Math.floor(minY / gridSpacing) * gridSpacing;
+
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+        ctx.lineWidth = 1;
+
+        for (let x = startX; x <= maxX; x += gridSpacing) {
+          ctx.beginPath();
+          ctx.moveTo(x, minY - gridSpacing);
+          ctx.lineTo(x, maxY + gridSpacing);
+          ctx.stroke();
+        }
+
+        for (let y = startY; y <= maxY; y += gridSpacing) {
+          ctx.beginPath();
+          ctx.moveTo(minX - gridSpacing, y);
+          ctx.lineTo(maxX + gridSpacing, y);
+          ctx.stroke();
+        }
+      }
+
+      function draw() {
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+
+        ctx.save();
+        ctx.translate(width / 2, height / 2);
+        ctx.scale(state.camera.zoom, state.camera.zoom);
+        ctx.translate(-state.camera.x, -state.camera.y);
+
+        drawGrid();
+        drawFood();
+        drawBlobs();
+
+        ctx.restore();
+
+        drawPlayerAura();
+      }
+
+      function drawFood() {
+        state.food.forEach((dot) => {
+          ctx.beginPath();
+          ctx.fillStyle = dot.color;
+          ctx.globalAlpha = 0.85;
+          ctx.arc(dot.x, dot.y, getRadius(dot) * 0.45, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        });
+      }
+
+      function drawBlobs() {
+        const blobs = [state.player, ...state.bots];
+        blobs.sort((a, b) => a.mass - b.mass);
+
+        blobs.forEach((blob) => {
+          const radius = getRadius(blob);
+
+          const gradient = ctx.createRadialGradient(
+            blob.x - radius * 0.35,
+            blob.y - radius * 0.35,
+            radius * 0.3,
+            blob.x,
+            blob.y,
+            radius
+          );
+          gradient.addColorStop(0, "rgba(255,255,255,0.35)");
+          gradient.addColorStop(1, blob.color);
+
+          ctx.beginPath();
+          ctx.fillStyle = gradient;
+          ctx.shadowColor = blob.color;
+          ctx.shadowBlur = 15;
+          ctx.arc(blob.x, blob.y, radius, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = "rgba(15,15,30,0.65)";
+          ctx.font = `${Math.max(14, radius * 0.4)}px 'Segoe UI', sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(blob.name || "Blob", blob.x, blob.y);
+        });
+      }
+
+      function drawPlayerAura() {
+        const radius = getRadius(state.player) * state.camera.zoom;
+        const centerX = window.innerWidth / 2;
+        const centerY = window.innerHeight / 2;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        const gradient = ctx.createRadialGradient(
+          centerX,
+          centerY,
+          radius * 0.6,
+          centerX,
+          centerY,
+          radius * 1.8
+        );
+        gradient.addColorStop(0, "rgba(59, 130, 246, 0.25)");
+        gradient.addColorStop(1, "rgba(59, 130, 246, 0)");
+
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function loop(timestamp) {
+        const delta = Math.min((timestamp - state.lastFrame) / 1000, 0.05);
+        state.lastFrame = timestamp;
+        update(delta);
+        draw();
+        requestAnimationFrame(loop);
+      }
+
+      init();
+    </script>
+  </body>
+</html>
